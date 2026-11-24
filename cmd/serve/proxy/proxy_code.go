@@ -17,6 +17,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Note each run in a file if asked to
+	if runLog := os.Getenv("RCLONE_TEST_PROXY_RUN_LOG"); runLog != "" {
+		f, err := os.OpenFile(runLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, _ = f.WriteString(in["user"] + "\n")
+		_ = f.Close()
+	}
+
 	// Write the output
 	var out = map[string]string{}
 	for k, v := range in {
@@ -25,6 +35,15 @@ func main() {
 			v += "-test"
 		case "error":
 			log.Fatal(v)
+		case "pass":
+			// Simulate a key-only policy which refuses every password
+			if os.Getenv("RCLONE_TEST_PROXY_KEY_ONLY") != "" {
+				log.Fatalf("password refused for %q", in["user"])
+			}
+		case "public_key":
+			if os.Getenv("RCLONE_TEST_PROXY_REFUSE_KEYS") != "" {
+				log.Fatalf("public key refused for %q", in["user"])
+			}
 		}
 		out[k] = v
 	}
