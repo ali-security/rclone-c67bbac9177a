@@ -148,6 +148,11 @@ address, or the proxy returns different config parameters (eg a rotated
 |api_key|), a fresh backend will be created on the next request rather
 than the cached one being reused.
 
+A cached answer is checked with the program again after 5 minutes even
+if the user is in constant use, so revoking a user in the program
+takes effect within 5 minutes. For |serve sftp| this applies to new
+logins - an existing connection is not closed.
+
 This can be used to build general purpose proxies to any kind of
 backend that rclone supports.
 
@@ -198,14 +203,13 @@ type cacheEntry struct {
 // A variable so tests can adjust it.
 var accessKeyRefreshInterval = 10 * time.Second
 
-// accessKeyRevalidateInterval is how long a cached access key ID is
-// trusted before the proxy is asked about it again even though its
-// signatures are still verifying, so a revoked access key ID stops
-// working within this time rather than for as long as it stays in
-// use.
+// revalidateInterval is how long a cached answer from the proxy is
+// trusted before the proxy is asked again even though the credential
+// is still in use, so a revoked user or access key ID stops working
+// within this time rather than for as long as it stays in use.
 //
 // A variable so tests can adjust it.
-var accessKeyRevalidateInterval = 5 * time.Minute
+var revalidateInterval = 5 * time.Minute
 
 // authKind is the kind of credential the client presented
 type authKind int
@@ -430,6 +434,10 @@ func (p *Proxy) call(user, auth string, kind authKind, clientIP string) (value a
 // Call runs the auth proxy with the username and password/public key provided
 // returning a *vfs.VFS and the key used in the VFS cache.
 //
+// A cached answer older than revalidateInterval is checked with the
+// proxy again so a revoked user is refused even if it is in constant
+// use.
+//
 // remoteAddr is the address of the client as returned by net.Addr.String().
 // It may be empty if the client has no IP address, for example when
 // connecting over a unix socket.
@@ -442,6 +450,14 @@ func (p *Proxy) Call(user, auth string, isPublicKey bool, remoteAddr string) (VF
 
 	// Look in the cache first with the credential-aware key
 	value, ok := p.vfsCache.GetMaybe(cacheKey)
+
+	// Ask the proxy again once the cached answer is old enough, so
+	// a revoked user is refused even if the entry is in constant use
+	if entry, isEntry := value.(cacheEntry); ok && isEntry {
+		if time.Since(time.Unix(0, entry.refreshed.Load())) >= revalidateInterval {
+			ok = false
+		}
+	}
 
 	// If not found then call the proxy for a fresh answer
 	if !ok {
@@ -491,7 +507,7 @@ func (p *Proxy) Call(user, auth string, isPublicKey bool, remoteAddr string) (VF
 // safe to do when a signature fails to verify in case the secret has
 // been rotated.
 //
-// A cached answer older than accessKeyRevalidateInterval is always
+// A cached answer older than revalidateInterval is always
 // checked with the proxy so a revoked access key ID is refused even
 // if it is in constant use.
 //
@@ -504,7 +520,7 @@ func (p *Proxy) CallAccessKey(accessKeyID, remoteAddr string, refresh bool) (VFS
 		if entry, isEntry := value.(cacheEntry); isEntry {
 			age := time.Since(time.Unix(0, entry.refreshed.Load()))
 			switch {
-			case age >= accessKeyRevalidateInterval:
+			case age >= revalidateInterval:
 				refresh = true
 			case age < accessKeyRefreshInterval:
 				refresh = false
